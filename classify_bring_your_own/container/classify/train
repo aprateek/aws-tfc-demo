@@ -1,0 +1,158 @@
+#!/usr/bin/env python
+
+# A sample training component that trains a simple scikit-learn decision tree model.
+# This implementation works in File mode and makes no assumptions about the input file names.
+# Input is specified as CSV with a data point in each row and the labels in the first column.
+
+from __future__ import print_function
+
+import os
+import json
+import pickle
+import sys
+import traceback
+
+import pandas as pd
+
+#----------- RNN Imports for classification model for Cases --------------
+
+import keras
+import numpy as np
+from keras.preprocessing.text import Tokenizer
+import numpy as np
+import pandas as pd
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.preprocessing.sequence import pad_sequences
+from keras.layers import Input, Dense, Dropout, Embedding, LSTM, Flatten
+from keras.models import Model
+from keras.utils import to_categorical
+from keras.callbacks import ModelCheckpoint
+from sklearn.metrics import confusion_matrix
+#import seaborn as sns
+#import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+#plt.style.use('ggplot')
+#%matplotlib inline
+#from IPython.core.display import display, HTML
+#display(HTML("<style>.container { width:100% !important; }</style>"))
+
+import tensorflow as tf
+
+ #----------- RNN Imports for classification model for Cases --------------
+
+# These are the paths to where SageMaker mounts interesting things in your container.
+
+prefix = '/opt/ml/'
+
+input_path = prefix + 'input/data'
+output_path = os.path.join(prefix, 'output')
+model_path = os.path.join(prefix, 'model')
+param_path = os.path.join(prefix, 'input/config/hyperparameters.json')
+
+# This algorithm has a single channel of input data called 'training'. Since we run in
+# File mode, the input files are copied to the directory specified here.
+channel_name='training'
+training_path = os.path.join(input_path, channel_name)
+
+# The function to execute the training.
+def train():
+    print('Starting the training.')
+    try:
+        # Read in any hyperparameters that the user passed with the training job
+        with open(param_path, 'r') as tc:
+            trainingParams = json.load(tc)
+
+        # Take the set of files and read them all into a single pandas dataframe
+        input_files = [ os.path.join(training_path, file) for file in os.listdir(training_path) ]
+        print(input_files)
+        # change to take the path from the read
+        train_data =pd.read_csv('/opt/ml/input/data/training/latest_ticket_data.csv')
+        print(train_data.head()) 
+        
+               
+        #----------- RNN classification model for Cases --------------
+
+        # Add the target varibale
+        train_data['target'] = train_data.Category.astype('category').cat.codes
+        num_class = len(np.unique(train_data.Category.values))
+        y = train_data['target'].values
+
+        # Tokenizer has build the dictionary of characters instead of words. The dictionary will look like this:
+        MAX_LENGTH = 500
+        tokenizer = Tokenizer()
+        tokenizer.fit_on_texts(train_data.Description.values)
+        post_seq = tokenizer.texts_to_sequences(train_data.Description.values)
+        post_seq_padded = pad_sequences(post_seq, maxlen=MAX_LENGTH)
+
+        # split the data between train and test
+        X_train, X_test, y_train, y_test = train_test_split(post_seq_padded, y, test_size=0.05,random_state=42)
+
+        # size of Vocabulary
+        vocab_size = len(tokenizer.word_index) + 1
+
+
+        ## Train the model using RNN with hyperparamter
+
+        inputs = Input(shape=(MAX_LENGTH, ))
+        embedding_layer = Embedding(vocab_size,
+                                    128,
+                                    input_length=MAX_LENGTH)(inputs)
+                                    
+        x = Flatten()(embedding_layer)
+        x = Dense(32, activation='relu')(x)
+
+        # activation function used is softmax
+        predictions = Dense(num_class, activation='softmax')(x)
+        model = Model(inputs=[inputs], outputs=predictions)
+        model.compile(optimizer='adam',
+                      loss='categorical_crossentropy',
+                      metrics=['acc'])
+        model.summary()
+
+        filepath="weights-simple.hdf5"
+        checkpointer = ModelCheckpoint(filepath, monitor='val_acc', verbose=1, save_best_only=True, mode='max')
+        history = model.fit([X_train], batch_size=64, y=to_categorical(y_train), verbose=1, validation_split=0.25,
+                  shuffle=True, epochs=10, callbacks=[checkpointer])
+
+        predicted = model.predict(X_test)
+        predicted = np.argmax(predicted, axis=1)
+        accuracy_score(y_test, predicted)
+        
+       
+        #----------- RNN classification model for Cases --------------
+        
+        # save the model
+                    
+        filepath = os.path.join(model_path, 'classify_model')
+        tf.keras.models.save_model(
+        model,
+        filepath,
+        overwrite=True,
+        include_optimizer=True,
+        save_format=None,
+        signatures=None,
+        options=None
+        )
+        
+        #model.save(filepath)
+        print('Training complete.')
+       
+
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during training: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during training: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)
+
+if __name__ == '__main__':
+    train()
+
+    # A zero exit code causes the job to be marked a Succeeded.
+    sys.exit(0)
